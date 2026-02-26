@@ -1,14 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Mauricio Palpites (Mobile Web) - Streamlit (mobile-first)
-- UI em cards (estilo app)
-- Busca jogos na internet (football-data.org + TheSportsDB fallback)
-- Top 3 do dia, filtro por % e multi-ligas
-- Exporta CSV (PT-BR) e Excel (.xlsx) com Ranking + Cores por confiança
-
-OBS: token do football-data pode ser sobrescrito via:
-- Streamlit Secrets: FOOTBALL_DATA_TOKEN
-- Variável de ambiente: FOOTBALL_DATA_TOKEN
+Mauricio Palpites (Mobile Web) - Streamlit
+- Responsivo para celular
+- Busca jogos na internet (football-data.org + TheSportsDB)
+- Ranking + cores por confiança no Excel
 """
 
 import os
@@ -35,9 +30,6 @@ OUT_CSV_NAME = "palpites_saida.csv"
 FD_BASE = "https://api.football-data.org/v4"
 TSDB_BASE = "https://www.thesportsdb.com/api/v1/json/3"  # chave pública "3" (limitada)
 
-# Token default (pode sobrescrever em Secrets/Env)
-DEFAULT_FD_TOKEN = "2f1cc1a3dcde4cfd8ef56002a5284302"
-
 # Heurística (não é garantia)
 K_MANDANTE = 0.08
 K_EMPATE_BASE = 0.26
@@ -57,22 +49,17 @@ def clear_logs():
 
 
 # =========================
-# Token / headers
+# Provedores: token
 # =========================
 def fd_token() -> Optional[str]:
-    # 1) Secrets
+    # Cloud: use Secrets/Variables. Local: variável de ambiente.
     try:
         t = st.secrets.get("FOOTBALL_DATA_TOKEN", None)
         if t:
             return t
     except Exception:
         pass
-    # 2) Env
-    t = os.getenv("FOOTBALL_DATA_TOKEN")
-    if t:
-        return t
-    # 3) Default (pedido pelo usuário)
-    return DEFAULT_FD_TOKEN
+    return os.getenv("FOOTBALL_DATA_TOKEN")
 
 
 def fd_headers() -> Dict[str, str]:
@@ -83,7 +70,7 @@ def fd_headers() -> Dict[str, str]:
 
 
 def fd_enabled() -> bool:
-    return bool(fd_headers().get("X-Auth-Token"))
+    return bool(fd_headers())
 
 
 # =========================
@@ -93,7 +80,6 @@ def fd_enabled() -> bool:
 def load_catalog() -> List[Dict]:
     items: List[Dict] = []
 
-    # football-data (com token)
     if fd_enabled():
         try:
             r = requests.get(f"{FD_BASE}/competitions", headers=fd_headers(), timeout=20)
@@ -106,12 +92,8 @@ def load_catalog() -> List[Dict]:
                 if not cid or not name:
                     continue
                 items.append({"provider": "FD", "key": f"FD:{cid}", "name": name, "code": code, "id": cid})
-            log("Catálogo football-data carregado.")
-        except Exception as e:
-            log(f"AVISO: falha ao carregar catálogo football-data: {e}")
-
-    # TSDB fallback
-    try:
+except Exception as e:
+try:
         r = requests.get(f"{TSDB_BASE}/all_leagues.php", timeout=20)
         r.raise_for_status()
         data = r.json()
@@ -123,12 +105,8 @@ def load_catalog() -> List[Dict]:
             if not lid or not name:
                 continue
             items.append({"provider": "TSDB", "key": f"TSDB:{lid}", "name": name, "id": lid})
-        log("Catálogo TheSportsDB carregado.")
-    except Exception as e:
-        log(f"ERRO: não consegui carregar catálogo TheSportsDB: {e}")
-
-    # Dedup
-    seen = set()
+except Exception as e:
+seen = set()
     out = []
     for it in items:
         k = (it["provider"], it["name"].strip().lower())
@@ -163,7 +141,7 @@ def search_catalog(items: List[Dict], q: str) -> List[Dict]:
 
 
 # =========================
-# Jogos
+# Jogos (provedores)
 # =========================
 def fd_matches(competition_id: int, date_from: str, date_to: str) -> List[Dict]:
     url = f"{FD_BASE}/competitions/{competition_id}/matches"
@@ -221,6 +199,7 @@ def palpite_humano(best_bet: str, mandante: str, visitante: str) -> str:
 def to_portuguese(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return df
+
     out = pd.DataFrame({
         "data": df["date"],
         "fonte": df["provider"].map({"FD": "football-data", "TSDB": "TheSportsDB"}).fillna(df["provider"]),
@@ -229,7 +208,7 @@ def to_portuguese(df: pd.DataFrame) -> pd.DataFrame:
         "visitante": df["away"],
         "palpite": [palpite_humano(b, h, a) for b, h, a in zip(df["best_bet"], df["home"], df["away"])],
         "probabilidade_pct": (df["p_best_bet"].astype(float) * 100.0).round(1),
-        "confianca_0a100": pd.to_numeric(df["confidence"], errors="coerce").round(1),
+        "confianca_0a100": df["confidence"].astype(float).round(1),
         "placar_mais_provavel": df["most_likely_score"],
         "origem": df.get("data_source", ""),
     })
@@ -237,7 +216,7 @@ def to_portuguese(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # =========================
-# Excel (bytes): ranking + cores
+# Excel com ranking + cores (bytes)
 # =========================
 def excel_bytes_formatado(df_pt: pd.DataFrame) -> bytes:
     if df_pt is None or df_pt.empty:
@@ -368,7 +347,6 @@ def build_rows_for_item(item: Dict, days_ahead: int) -> pd.DataFrame:
         except Exception as e:
             log(f"ERRO football-data ({league_name}): {e}")
             return pd.DataFrame()
-
     else:
         lid = str(item["id"])
         try:
@@ -385,7 +363,6 @@ def build_rows_for_item(item: Dict, days_ahead: int) -> pd.DataFrame:
                         continue
                 except Exception:
                     pass
-
                 home = ev.get("strHomeTeam") or ""
                 away = ev.get("strAwayTeam") or ""
                 seed = abs(hash((league_name, date, home, away))) % (2**32)
@@ -426,61 +403,45 @@ def generate(selected_items: List[Dict], days_ahead: int, min_prob: float) -> pd
 
 
 # =========================
-# UI (Mobile-first)
+# UI (mobile)
 # =========================
 st.set_page_config(page_title="Mauricio Palpites", page_icon="⚽", layout="centered")
 
 st.markdown(
     """
     <style>
-      .block-container { padding-top: 0.8rem; padding-bottom: 2.0rem; }
-      .stButton>button, .stDownloadButton>button { width: 100%; border-radius: 14px; padding: 0.85rem 1rem; font-weight: 800; }
-      .chip { display:inline-block; padding:6px 10px; border-radius:999px; font-weight:700; font-size:0.85rem; }
-      .chip-green{ background:#dff0d8; }
-      .chip-yellow{ background:#fcf8e3; }
-      .chip-red{ background:#f2dede; }
-      .card {
-        background: white;
-        border-radius: 18px;
-        padding: 14px 14px;
-        box-shadow: 0 8px 20px rgba(0,0,0,0.06);
-        border: 1px solid rgba(0,0,0,0.06);
-        margin-bottom: 12px;
-      }
-      .t1 { font-size: 1.05rem; font-weight: 900; margin: 0; }
-      .t2 { font-size: 0.92rem; opacity: 0.85; margin: 4px 0 0 0; }
-      .t3 { font-size: 0.95rem; margin: 10px 0 0 0; font-weight: 800; }
-      .muted { opacity: 0.72; font-size: 0.85rem; }
-      .section-title { margin-top: 0.6rem; margin-bottom: 0.2rem; font-weight: 900; }
+      .block-container { padding-top: 1.0rem; padding-bottom: 2.0rem; }
+      .stButton>button, .stDownloadButton>button { width: 100%; border-radius: 12px; padding: 0.75rem 1rem; font-weight: 700; }
+      .small-note { opacity: 0.8; font-size: 0.9rem; }
     </style>
     """,
     unsafe_allow_html=True
 )
 
 st.title(APP_TITLE)
-st.caption("Abra no celular e use **Adicionar à tela inicial** para virar app.")
 
-# Config
 with st.expander("⚙️ Configuração", expanded=True):
+    st.caption("Dica: no celular, você pode 'Adicionar à tela inicial' e usar como app.")
     q = st.text_input("Buscar Competição/Liga", value="")
+
     catalog = load_catalog()
     filtered = search_catalog(catalog, q)
+    st.caption(f"Catálogo carregado: {len(catalog)} competições (FD={'sim' if fd_enabled() else 'não'} / TSDB=sim).")
 
     options = [f"[{it['provider']}] {it['name']}" for it in filtered]
     key_to_item = {f"[{it['provider']}] {it['name']}": it for it in filtered}
 
-    selected_opt = st.multiselect("Selecione 1 ou mais ligas", options=options[:250], default=[])
+    selected_opt = st.multiselect("Selecione uma ou mais ligas", options=options[:250], default=[])
     selected_items = [key_to_item[o] for o in selected_opt if o in key_to_item]
 
-    c1, c2 = st.columns(2)
-    with c1:
+    col1, col2 = st.columns(2)
+    with col1:
         days_ahead = st.slider("Dias à frente", 1, 30, 10)
-    with c2:
-        min_prob = st.slider("Só acima de (%)", 0, 95, 70)
+    with col2:
+        min_prob = st.slider("Filtro mínimo (%)", 0, 95, 70)
 
     run = st.button("🎯 Gerar palpites")
 
-# Run
 if run:
     clear_logs()
     log(f"Gerando | ligas={len(selected_items)} | dias={days_ahead} | filtro>={min_prob}%")
@@ -492,80 +453,38 @@ if run:
     else:
         df_pt = to_portuguese(raw)
         st.session_state["df_pt"] = df_pt
-        st.success(f"Encontrado: {len(df_pt)} palpites")
+        st.success(f"Resultados: {len(df_pt)}")
 
 df_pt = st.session_state.get("df_pt", pd.DataFrame())
-
-def conf_chip(conf: float) -> str:
-    try:
-        c = float(conf)
-    except Exception:
-        c = 0.0
-    if c >= 75:
-        return '<span class="chip chip-green">Confiança Alta</span>'
-    if c >= 60:
-        return '<span class="chip chip-yellow">Confiança Média</span>'
-    return '<span class="chip chip-red">Confiança Baixa</span>'
-
-def money_prob(prob: float) -> str:
-    try:
-        p = float(prob)
-    except Exception:
-        p = 0.0
-    return f"{p:.1f}%"
-
-# Results as cards
 if df_pt is not None and not df_pt.empty:
-    st.markdown("### ✅ Resultados")
-    df_sorted = df_pt.sort_values(["confianca_0a100", "probabilidade_pct"], ascending=False).reset_index(drop=True)
+    st.subheader("✅ Resultados")
+    st.dataframe(df_pt, use_container_width=True, hide_index=True)
 
-    # Top 3
-    st.markdown("### 🏆 Top 3 apostas do dia")
-    top3 = df_sorted.head(3)
+    top3 = df_pt.sort_values(["confianca_0a100", "probabilidade_pct"], ascending=False).head(3).reset_index(drop=True)
+    st.subheader("🏆 Top 3 apostas do dia")
     for i, r in top3.iterrows():
         st.markdown(
-            f"""
-            <div class="card">
-              <p class="t1">{i+1}. {r['mandante']} x {r['visitante']}</p>
-              <p class="t2">{r['competicao']} • {r['data']}</p>
-              <p class="t3">Palpite: {r['palpite']}</p>
-              <p class="muted">Probabilidade: <b>{money_prob(r['probabilidade_pct'])}</b> • Confiança: <b>{r['confianca_0a100']}</b> {conf_chip(r['confianca_0a100'])}</p>
-            </div>
-            """,
-            unsafe_allow_html=True
+            f"**{i+1}. {r['mandante']} x {r['visitante']}**  \n"
+            f"Palpite: **{r['palpite']}**  \n"
+            f"Probabilidade: **{r['probabilidade_pct']}%** | Confiança: **{r['confianca_0a100']}**"
         )
 
-    st.markdown("### 📋 Lista completa")
-    for _, r in df_sorted.iterrows():
-        st.markdown(
-            f"""
-            <div class="card">
-              <p class="t1">{r['mandante']} x {r['visitante']}</p>
-              <p class="t2">{r['competicao']} • {r['data']} • {r['fonte']}</p>
-              <p class="t3">{r['palpite']}</p>
-              <p class="muted">Probabilidade: <b>{money_prob(r['probabilidade_pct'])}</b> • Confiança: <b>{r['confianca_0a100']}</b> {conf_chip(r['confianca_0a100'])}</p>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-    st.markdown("### ⬇️ Exportar")
-    csv_bytes = df_sorted.to_csv(index=False, sep=";", decimal=",", encoding="utf-8-sig").encode("utf-8-sig")
+    st.subheader("⬇️ Exportar")
+    csv_bytes = df_pt.to_csv(index=False, sep=";", decimal=",", encoding="utf-8-sig").encode("utf-8-sig")
     st.download_button("📄 Baixar CSV", data=csv_bytes, file_name=OUT_CSV_NAME, mime="text/csv")
 
     try:
-        xlsx_bytes = excel_bytes_formatado(df_sorted)
+        xlsx_bytes = excel_bytes_formatado(df_pt)
         st.download_button(
             "📊 Baixar Excel (.xlsx)",
             data=xlsx_bytes,
             file_name="mauricio_palpites.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
-        st.caption("O Excel inclui **Ranking** e **cores por nível de confiança**.")
+        st.caption('<span class="small-note">O Excel inclui Ranking e cores por nível de confiança.</span>', unsafe_allow_html=True)
     except Exception as e:
         st.error(f"Falha ao gerar Excel: {e}")
 
-# Logs
 with st.expander("📄 Logs / Detalhes", expanded=False):
     if st.button("🧹 Limpar logs"):
         clear_logs()
@@ -575,4 +494,4 @@ with st.expander("📄 Logs / Detalhes", expanded=False):
     else:
         st.caption("Sem logs no momento.")
 
-st.caption("Fontes: football-data.org (com token) e TheSportsDB (fallback).")
+st.caption("Fontes: football-data.org (requer token) e TheSportsDB (fallback).")
